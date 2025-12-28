@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Flappy — Vanilla JS</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html, body { height: 100%; margin: 0; background:#65d4df; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+    .wrap { display:grid; place-items:center; height:100%; }
+    canvas { background: linear-gradient(#8be2ea, #65d4df); border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.2); }
+    .hud {
+      position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+      color: #fff; font-weight: 800; font-size: 28px; text-shadow: 0 2px 4px rgba(0,0,0,.3);
+      user-select:none;
+    }
+    .hint {
+      position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
+      color:#fff; font-weight:700; font-size:14px; text-shadow: 0 2px 4px rgba(0,0,0,.3);
+      background: rgba(0,0,0,.25); padding: 8px 12px; border-radius: 999px; user-select:none;
+    }
+    .btn {
+      position: fixed; top: 12px; right: 12px;
+      background:#111; color:#fff; border:none; border-radius:8px; padding:8px 12px; font-weight:700; cursor:pointer;
+      box-shadow: 0 6px 16px rgba(0,0,0,.25);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="game" width="420" height="700" aria-label="Flappy game canvas"></canvas>
+    <div id="score" class="hud">0</div>
+    <div class="hint">Space or Tap to Flap • Enter or Button to Restart</div>
+    <button id="restart" class="btn">Restart</button>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const scoreEl = document.getElementById('score');
+    const restartBtn = document.getElementById('restart');
+
+    // HiDPI scaling for crisp visuals
+    const DPR = Math.max(1, Math.floor(window.devicePixelRatio || 1));
+    function resizeCanvas() {
+      const cssW = canvas.width, cssH = canvas.height;
+      canvas.width = cssW * DPR;
+      canvas.height = cssH * DPR;
+      canvas.style.width = cssW + 'px';
+      canvas.style.height = cssH + 'px';
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    }
+    resizeCanvas();
+
+    // Config
+    const CFG = {
+      gravity: 0.5,
+      flap: -8.5,
+      pipeSpeed: 2.4,
+      pipeWidth: 64,
+      pipeGapMin: 130,
+      pipeGapMax: 190,
+      spawnMs: 1600,
+      groundHeight: 80,
+      birdX: 96,
+      birdSize: 28
+    };
+
+    // State
+    let pipes = [];
+    let birdY = canvas.height / DPR / 2;
+    let birdV = 0;
+    let score = 0;
+    let best = Number(localStorage.getItem('flappy_best') || 0);
+    let running = false;
+    let over = false;
+    let lastTime = 0;
+    let sinceSpawn = 0;
+
+    // Helpers
+    const randInt = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
+
+    function reset() {
+      pipes = [];
+      birdY = canvas.height / DPR / 2;
+      birdV = 0;
+      score = 0;
+      running = true;
+      over = false;
+      sinceSpawn = 0;
+      lastTime = performance.now();
+      scoreEl.textContent = '0';
+      loop(lastTime);
+    }
+
+    function gameOver() {
+      running = false;
+      over = true;
+      if (score > best) {
+        best = score;
+        localStorage.setItem('flappy_best', String(best));
+      }
+      scoreEl.textContent = `Score: ${score} • Best: ${best}`;
+    }
+
+    function flap() {
+      if (!running && !over) reset(); // start from idle
+      if (running) birdV = CFG.flap;
+    }
+
+    function spawnPipe() {
+      const h = canvas.height / DPR;
+      const gap = randInt(CFG.pipeGapMin, CFG.pipeGapMax);
+      const topHeight = randInt(50, h - CFG.groundHeight - gap - 50);
+      const bottomY = topHeight + gap;
+      pipes.push({ x: canvas.width / DPR + 10, w: CFG.pipeWidth, topHeight, bottomY, passed:false });
+    }
+
+    function rectOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+      return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+    }
+
+    function collide() {
+      const b = CFG.birdSize;
+      const bx = CFG.birdX - b / 2;
+      const by = birdY - b / 2;
+      const h = canvas.height / DPR;
+      const groundTop = h - CFG.groundHeight;
+
+      if (by <= 0 || by + b >= groundTop) return true;
+
+      for (const p of pipes) {
+        if (rectOverlap(bx, by, b, b, p.x, 0, p.w, p.topHeight)) return true;
+        const bottomHeight = h - CFG.groundHeight - p.bottomY;
+        if (rectOverlap(bx, by, b, b, p.x, p.bottomY, p.w, bottomHeight)) return true;
+      }
+      return false;
+    }
+
+    // Draw
+    function drawBackground(now) {
+      const w = canvas.width / DPR, h = canvas.height / DPR;
+
+      // Sky gradient already via CSS; draw clouds
+      ctx.save();
+      ctx.globalAlpha = 0.6;
+      ctx.fillStyle = '#a9ecf1';
+      for (let i = 0; i < 4; i++) {
+        const cw = 120, ch = 40;
+        const speed = 22000 - i * 5000;
+        const x = (now / speed) % (w + cw) - cw;
+        const y = 50 + i * 65;
+        roundRect(x, y, cw, ch, 20); ctx.fill();
+      }
+      ctx.restore();
+
+      // Ground
+      ctx.fillStyle = 'rgba(0,0,0,0.08)'; ctx.fillRect(0, h - CFG.groundHeight - 6, w, 6);
+      ctx.fillStyle = '#e4db9c'; ctx.fillRect(0, h - CFG.groundHeight, w, CFG.groundHeight);
+      ctx.fillStyle = '#b9d96a'; ctx.fillRect(0, h - CFG.groundHeight, w, 6);
+    }
+
+    function roundRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    function drawBird() {
+      const b = CFG.birdSize;
+      const x = CFG.birdX, y = birdY;
+
+      ctx.save();
+      const tilt = Math.max(Math.min(birdV * 2, 25), -25) * Math.PI / 180;
+      ctx.translate(x, y); ctx.rotate(tilt);
+
+      // Body
+      ctx.fillStyle = '#ffcc4d'; ctx.strokeStyle = '#e0ad32'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.ellipse(0, 0, b * 0.55, b * 0.42, 0, 0, Math.PI * 2);
+      ctx.fill(); ctx.stroke();
+
+      // Wing
+      ctx.fillStyle = '#f4b844'; ctx.beginPath();
+      ctx.ellipse(-4, 2, b * 0.28, b * 0.18, 0, 0, Math.PI * 2); ctx.fill();
+
+      // Eye
+      ctx.fillStyle = '#fff'; ctx.beginPath();
+      ctx.arc(b * 0.15, -b * 0.1, b * 0.12, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#222'; ctx.beginPath();
+      ctx.arc(b * 0.18, -b * 0.1, b * 0.05, 0, Math.PI * 2); ctx.fill();
+
+      // Beak
+      ctx.fillStyle = '#ff9f1c'; ctx.beginPath();
+      ctx.moveTo(b * 0.4, 0); ctx.lineTo(b * 0.6, -b * 0.06); ctx.lineTo(b * 0.6, b * 0.06);
+      ctx.closePath(); ctx.fill();
+
+      ctx.restore();
+    }
+
+    function drawPipes() {
+      const h = canvas.height / DPR;
+      for (const p of pipes) {
+        // Pipe body
+        ctx.fillStyle = '#5aa36a';
+        ctx.fillRect(p.x, 0, p.w, p.topHeight);
+        ctx.fillRect(p.x, p.bottomY, p.w, h - CFG.groundHeight - p.bottomY);
+        // Lips
+        ctx.fillStyle = '#4c905b';
+        ctx.fillRect(p.x - 3, p.topHeight - 12, p.w + 6, 12);
+        ctx.fillRect(p.x - 3, p.bottomY, p.w + 6, 12);
+      }
+    }
+
+    // Update
+    function update(dt) {
+      birdV += CFG.gravity;
+      birdY += birdV;
+
+      for (const p of pipes) {
+        p.x -= CFG.pipeSpeed;
+        if (!p.passed && p.x + p.w < CFG.birdX - CFG.birdSize / 2) { p.passed = true; score++; }
+      }
+      pipes = pipes.filter(p => p.x + p.w > -15);
+
+      sinceSpawn += dt;
+      if (sinceSpawn >= CFG.spawnMs) { spawnPipe(); sinceSpawn = 0; }
+
+      if (collide()) gameOver();
+    }
+
+    // Loop
+    function loop(now) {
+      if (!running) return;
+      const dt = Math.min(50, now - lastTime);
+      lastTime = now;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawBackground(now);
+      drawPipes();
+      drawBird();
+      update(dt);
+
+      scoreEl.textContent = String(score);
+      requestAnimationFrame(loop);
+    }
+
+    // Controls
+    document.addEventListener('keydown', (e) => {
+      if (e.code === 'Space') { e.preventDefault(); flap(); }
+      else if (e.code === 'Enter') { e.preventDefault(); if (over) reset(); }
+    });
+    canvas.addEventListener('pointerdown', flap);
+    restartBtn.addEventListener('click', () => { if (!running || over) reset(); });
+
+    // Idle message
+    (function showIdle() {
+      scoreEl.textContent = 'Tap or press Space to start';
+    })();
+
+    // Handle tab visibility for better feel
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && running) { running = false; }
+      else if (!document.hidden && !over && !running && score === 0) { /* stay idle */ }
+    });
+
+    // Resize on window changes (keeps crisp rendering)
+    window.addEventListener('resize', resizeCanvas);
+  </script>
+</body>
+</html>
